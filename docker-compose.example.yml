@@ -1,0 +1,24 @@
+services:
+  st-hk-bridge:
+    build: .
+    image: st-hk-bridge:latest
+    container_name: st-hk-bridge
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      SMARTTHINGS_TOKEN: "replace-with-pat"
+      SMARTTHINGS_DEVICE_ID: "replace-with-device-id"
+      HOMEKIT_BRIDGE_NAME: "Front Door Lock"
+      HOMEKIT_USERNAME: "AA:BB:CC:DD:EE:FF"
+      HOMEKIT_SETUP_CODE: "123-45-678"
+      POLL_INTERVAL_SECONDS: "30"
+      COMMAND_BURST_POLL_INTERVAL_SECONDS: "5"
+      COMMAND_BURST_DURATION_SECONDS: "15"
+      TRANSITION_TIMEOUT_SECONDS: "30"
+      SMARTTHINGS_API_BASE: "https://api.smartthings.com/v1"
+      HOMEKIT_PORT: "51826"
+      HEALTH_PORT: "8080"
+      DATA_DIR: "/data"
+      LOG_LEVEL: "info"
+    volumes:
+      - ./data:/data
