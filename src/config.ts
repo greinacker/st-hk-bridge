@@ -15,6 +15,10 @@ const rawConfigSchema = z.object({
   COMMAND_BURST_POLL_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(300).default(5),
   COMMAND_BURST_DURATION_SECONDS: z.coerce.number().int().min(1).max(600).default(15),
   TRANSITION_TIMEOUT_SECONDS: z.coerce.number().int().min(5).max(600).default(30),
+  POLL_FAILURES_BEFORE_UNKNOWN: z.coerce.number().int().min(1).max(20).default(3),
+  POLL_FAILURE_GRACE_SECONDS: z.coerce.number().int().min(1).max(3600).default(90),
+  SMARTTHINGS_REQUEST_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(120).default(15),
+  SMARTTHINGS_MAX_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(10),
   SMARTTHINGS_API_BASE: z
     .string()
     .url("SMARTTHINGS_API_BASE must be a valid URL")
@@ -38,6 +42,10 @@ export interface AppConfig {
   commandBurstPollIntervalMs: number;
   commandBurstDurationMs: number;
   transitionTimeoutMs: number;
+  pollFailuresBeforeUnknown: number;
+  pollFailureGraceMs: number;
+  smartThingsRequestTimeoutMs: number;
+  smartThingsMaxRequestsPerMinute: number;
   dataDir: string;
   logLevel: string;
   healthPort: number;
@@ -66,6 +74,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     commandBurstPollIntervalMs: parsed.data.COMMAND_BURST_POLL_INTERVAL_SECONDS * 1000,
     commandBurstDurationMs: parsed.data.COMMAND_BURST_DURATION_SECONDS * 1000,
     transitionTimeoutMs: parsed.data.TRANSITION_TIMEOUT_SECONDS * 1000,
+    pollFailuresBeforeUnknown: parsed.data.POLL_FAILURES_BEFORE_UNKNOWN,
+    pollFailureGraceMs: parsed.data.POLL_FAILURE_GRACE_SECONDS * 1000,
+    smartThingsRequestTimeoutMs: parsed.data.SMARTTHINGS_REQUEST_TIMEOUT_SECONDS * 1000,
+    smartThingsMaxRequestsPerMinute: parsed.data.SMARTTHINGS_MAX_REQUESTS_PER_MINUTE,
     dataDir: parsed.data.DATA_DIR,
     logLevel: parsed.data.LOG_LEVEL,
     healthPort: parsed.data.HEALTH_PORT

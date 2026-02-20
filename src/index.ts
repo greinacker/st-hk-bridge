@@ -6,6 +6,7 @@ import { HealthServer } from "./health/server";
 import { LockAccessory } from "./homekit/lockAccessory";
 import { createLogger } from "./logger";
 import { SmartThingsClient } from "./smartthings/client";
+import { PersistedLockStateStore } from "./state/persistedLockStateStore";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -18,6 +19,13 @@ async function main(): Promise<void> {
     token: config.smartThingsToken,
     deviceId: config.smartThingsDeviceId,
     baseUrl: config.smartThingsApiBase,
+    logger,
+    requestTimeoutMs: config.smartThingsRequestTimeoutMs,
+    maxRequestsPerMinute: config.smartThingsMaxRequestsPerMinute
+  });
+
+  const persistedLockStateStore = new PersistedLockStateStore({
+    dataDir: config.dataDir,
     logger
   });
 
@@ -37,12 +45,24 @@ async function main(): Promise<void> {
     }
   });
 
+  const persistedState = await persistedLockStateStore.load();
+  if (persistedState) {
+    accessory.updateFromLockState(persistedState);
+    logger.info({ persistedState }, "Restored last known lock state from disk");
+  }
+
   coordinator = new BridgeCoordinator({
     client: smartThingsClient,
     accessory,
     pollIntervalMs: config.pollIntervalMs,
     burstPollIntervalMs: config.commandBurstPollIntervalMs,
     burstDurationMs: config.commandBurstDurationMs,
+    pollFailuresBeforeUnknown: config.pollFailuresBeforeUnknown,
+    pollFailureGraceMs: config.pollFailureGraceMs,
+    initialMappedState: persistedState ?? "unknown",
+    onObservedState: async (state) => {
+      await persistedLockStateStore.save(state);
+    },
     logger
   });
 
@@ -55,7 +75,7 @@ async function main(): Promise<void> {
   try {
     await coordinator.pollOnce();
   } catch (error) {
-    logger.warn({ error }, "Initial SmartThings poll failed. HomeKit state is set to Unknown.");
+    logger.warn({ err: error }, "Initial SmartThings poll failed. HomeKit state may be stale.");
   }
 
   await accessory.publish();
@@ -68,6 +88,10 @@ async function main(): Promise<void> {
       commandBurstPollIntervalMs: config.commandBurstPollIntervalMs,
       commandBurstDurationMs: config.commandBurstDurationMs,
       transitionTimeoutMs: config.transitionTimeoutMs,
+      pollFailuresBeforeUnknown: config.pollFailuresBeforeUnknown,
+      pollFailureGraceMs: config.pollFailureGraceMs,
+      smartThingsRequestTimeoutMs: config.smartThingsRequestTimeoutMs,
+      smartThingsMaxRequestsPerMinute: config.smartThingsMaxRequestsPerMinute,
       healthPort: config.healthPort
     },
     "SmartThings-to-HomeKit lock bridge started"
@@ -86,11 +110,11 @@ async function main(): Promise<void> {
     coordinator.stop();
 
     await healthServer.stop().catch((error: unknown) => {
-      logger.warn({ error }, "Failed to stop health server cleanly");
+      logger.warn({ err: error }, "Failed to stop health server cleanly");
     });
 
     await accessory.unpublish().catch((error: unknown) => {
-      logger.warn({ error }, "Failed to unpublish HomeKit accessory cleanly");
+      logger.warn({ err: error }, "Failed to unpublish HomeKit accessory cleanly");
     });
 
     if (typeof logger.flush === "function") {

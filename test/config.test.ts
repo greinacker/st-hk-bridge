@@ -20,6 +20,10 @@ describe("loadConfig", () => {
     expect(config.commandBurstPollIntervalMs).toBe(5000);
     expect(config.commandBurstDurationMs).toBe(15000);
     expect(config.transitionTimeoutMs).toBe(30000);
+    expect(config.pollFailuresBeforeUnknown).toBe(3);
+    expect(config.pollFailureGraceMs).toBe(90000);
+    expect(config.smartThingsRequestTimeoutMs).toBe(15000);
+    expect(config.smartThingsMaxRequestsPerMinute).toBe(10);
     expect(config.smartThingsApiBase).toBe("https://api.smartthings.com/v1");
     expect(config.homeKitPort).toBe(51826);
     expect(config.healthPort).toBe(8080);
@@ -41,5 +45,11 @@ describe("loadConfig", () => {
     expect(() => {
       loadConfig({ ...validEnv, HOMEKIT_SETUP_CODE: "12345678" });
     }).toThrow(/HOMEKIT_SETUP_CODE/);
+  });
+
+  it("fails for invalid poll failure threshold", () => {
+    expect(() => {
+      loadConfig({ ...validEnv, POLL_FAILURES_BEFORE_UNKNOWN: "0" });
+    }).toThrow(/POLL_FAILURES_BEFORE_UNKNOWN/);
   });
 });

@@ -72,7 +72,7 @@ export class HealthServer {
     await new Promise<void>((resolve) => {
       server.close((error) => {
         if (error) {
-          this.logger.warn({ error }, "Error while shutting down health endpoint");
+          this.logger.warn({ err: error }, "Error while shutting down health endpoint");
         }
         resolve();
       });

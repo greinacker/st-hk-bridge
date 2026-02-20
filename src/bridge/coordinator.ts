@@ -9,6 +9,10 @@ export interface BridgeCoordinatorOptions {
   pollIntervalMs: number;
   burstPollIntervalMs: number;
   burstDurationMs: number;
+  pollFailuresBeforeUnknown?: number;
+  pollFailureGraceMs?: number;
+  initialMappedState?: LockState;
+  onObservedState?: (state: LockState) => Promise<void> | void;
   logger: Pick<Logger, "debug" | "warn">;
 }
 
@@ -25,11 +29,17 @@ function stringifyError(error: unknown): string {
 }
 
 export class BridgeCoordinator {
+  private static readonly DEFAULT_POLL_FAILURES_BEFORE_UNKNOWN = 3;
+  private static readonly DEFAULT_POLL_FAILURE_GRACE_MS = 90_000;
+
   private readonly client: SmartThingsClientLike;
   private readonly accessory: LockStateSink;
   private readonly pollIntervalMs: number;
   private readonly burstPollIntervalMs: number;
   private readonly burstDurationMs: number;
+  private readonly pollFailuresBeforeUnknown: number;
+  private readonly pollFailureGraceMs: number;
+  private readonly onObservedState?: (state: LockState) => Promise<void> | void;
   private readonly logger: Pick<Logger, "debug" | "warn">;
 
   private pollTimer: NodeJS.Timeout | null = null;
@@ -37,6 +47,8 @@ export class BridgeCoordinator {
   private burstWindowEndsAtMs: number | null = null;
   private burstTargetState: Exclude<LockState, "unknown"> | null = null;
   private pollInFlight = false;
+  private consecutivePollFailures = 0;
+  private firstPollFailureAtMs: number | null = null;
 
   private bridgeState: BridgeState = {
     status: "degraded",
@@ -51,7 +63,13 @@ export class BridgeCoordinator {
     this.pollIntervalMs = options.pollIntervalMs;
     this.burstPollIntervalMs = options.burstPollIntervalMs;
     this.burstDurationMs = options.burstDurationMs;
+    this.pollFailuresBeforeUnknown =
+      options.pollFailuresBeforeUnknown ?? BridgeCoordinator.DEFAULT_POLL_FAILURES_BEFORE_UNKNOWN;
+    this.pollFailureGraceMs =
+      options.pollFailureGraceMs ?? BridgeCoordinator.DEFAULT_POLL_FAILURE_GRACE_MS;
+    this.onObservedState = options.onObservedState;
     this.logger = options.logger;
+    this.bridgeState.currentMappedState = options.initialMappedState ?? "unknown";
   }
 
   start(): void {
@@ -125,6 +143,16 @@ export class BridgeCoordinator {
       const state = await this.client.getLockStatus();
       this.accessory.updateFromLockState(state);
       this.setHealthyState(state);
+      this.consecutivePollFailures = 0;
+      this.firstPollFailureAtMs = null;
+
+      if (this.onObservedState) {
+        try {
+          await this.onObservedState(state);
+        } catch (error) {
+          this.logger.warn({ err: error }, "Failed to process observed lock state update");
+        }
+      }
 
       if (this.burstTargetState !== null && state === this.burstTargetState) {
         this.logger.debug(
@@ -134,9 +162,40 @@ export class BridgeCoordinator {
         this.stopBurstPolling();
       }
     } catch (error) {
-      this.accessory.setUnknownState();
-      this.setDegradedState(stringifyError(error));
-      this.logger.warn({ error }, "Polling SmartThings lock status failed");
+      const now = Date.now();
+      this.consecutivePollFailures += 1;
+      this.firstPollFailureAtMs = this.firstPollFailureAtMs ?? now;
+
+      const failureWindowMs = now - this.firstPollFailureAtMs;
+      const shouldMarkUnknown =
+        this.consecutivePollFailures >= this.pollFailuresBeforeUnknown ||
+        failureWindowMs >= this.pollFailureGraceMs;
+      const remainingFailuresBeforeUnknown = Math.max(
+        0,
+        this.pollFailuresBeforeUnknown - this.consecutivePollFailures
+      );
+      const withinFailureTolerance = !shouldMarkUnknown;
+
+      if (shouldMarkUnknown) {
+        this.accessory.setUnknownState();
+      }
+
+      this.setDegradedState(stringifyError(error), this.accessory.getCurrentMappedState());
+      this.logger.warn(
+        {
+          err: error,
+          consecutivePollFailures: this.consecutivePollFailures,
+          failureWindowMs,
+          pollFailuresBeforeUnknown: this.pollFailuresBeforeUnknown,
+          pollFailureGraceMs: this.pollFailureGraceMs,
+          markUnknown: shouldMarkUnknown,
+          withinFailureTolerance,
+          remainingFailuresBeforeUnknown
+        },
+        withinFailureTolerance
+          ? "Polling SmartThings lock status failed; keeping last known state (within tolerance)"
+          : "Polling SmartThings lock status failed; marking HomeKit current state as Unknown"
+      );
       throw error;
     } finally {
       this.pollInFlight = false;
@@ -156,11 +215,11 @@ export class BridgeCoordinator {
     };
   }
 
-  private setDegradedState(message: string): void {
+  private setDegradedState(message: string, currentMappedState: LockState): void {
     this.bridgeState = {
       ...this.bridgeState,
       status: "degraded",
-      currentMappedState: "unknown",
+      currentMappedState,
       lastPollError: message
     };
   }

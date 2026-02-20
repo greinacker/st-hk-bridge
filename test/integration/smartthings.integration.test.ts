@@ -169,7 +169,8 @@ describe("SmartThings integration", () => {
 
     serverState.failNextStatusRequest = true;
     await expect(coordinator.pollOnce()).rejects.toThrow();
-    expect(accessory.state).toBe("unknown");
+    expect(accessory.state).toBe("unlocked");
+    expect(coordinator.getBridgeState().status).toBe("degraded");
 
     serverState.lockValue = "locked";
     await coordinator.pollOnce();

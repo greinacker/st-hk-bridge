@@ -11,7 +11,8 @@ Standalone SmartThings-to-HomeKit bridge for one lock device.
 - After a successful lock/unlock command, temporarily polls every 5 seconds for 15 seconds by default, and exits early if the expected state is observed.
 - If the expected state is never observed, transition is timed out after 30 seconds by default and target state is reset to current observed state.
 - Uses confirm-only command behavior: HomeKit command succeeds only after SmartThings command request succeeds.
-- Marks current lock state as `Unknown` immediately if status polling fails.
+- Tolerates transient polling failures and only marks lock state `Unknown` after a configurable outage threshold.
+- Persists the last known `locked`/`unlocked` state in `DATA_DIR` and restores it on restart.
 
 ## Requirements
 
@@ -37,6 +38,10 @@ Optional:
 - `COMMAND_BURST_POLL_INTERVAL_SECONDS` (default `5`)
 - `COMMAND_BURST_DURATION_SECONDS` (default `15`)
 - `TRANSITION_TIMEOUT_SECONDS` (default `30`)
+- `POLL_FAILURES_BEFORE_UNKNOWN` (default `3`)
+- `POLL_FAILURE_GRACE_SECONDS` (default `90`)
+- `SMARTTHINGS_REQUEST_TIMEOUT_SECONDS` (default `15`)
+- `SMARTTHINGS_MAX_REQUESTS_PER_MINUTE` (default `10`)
 - `SMARTTHINGS_API_BASE` (default `https://api.smartthings.com/v1`)
 - `HOMEKIT_PORT` (default `51826`)
 - `DATA_DIR` (default `/data`)
@@ -116,5 +121,6 @@ npm test
 
 ## Notes
 
-- SmartThings device API rate limit is 12 requests/minute per device. The default 30 second polling interval is 2 requests/minute, and each command burst adds up to 2-3 extra status polls.
+- SmartThings device API rate limit is 12 requests/minute per device. This bridge defaults to `SMARTTHINGS_MAX_REQUESTS_PER_MINUTE=10` and will delay requests when needed to stay within that budget.
+- Default polling is 2 requests/minute, and each command burst adds up to 2-3 extra status polls in the short burst window.
 - For Docker deployments on Linux/NAS, host networking improves HomeKit discovery reliability.

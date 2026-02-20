@@ -210,7 +210,7 @@ export class LockAccessory implements LockStateSink {
         mapDesiredLockStateToTargetCharacteristicValue(this.targetState)
       );
     } catch (error) {
-      this.logger.warn({ error }, "Failed to execute lock command through SmartThings");
+      this.logger.warn({ err: error }, "Failed to execute lock command through SmartThings");
       if (error instanceof HapStatusError) {
         throw error;
       }

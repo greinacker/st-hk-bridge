@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import pino from "pino";
 import {
   SmartThingsApiError,
   SmartThingsClient,
+  SmartThingsRequestTimeoutError,
   parseLockState,
   parseRetryAfterMs
 } from "../src/smartthings/client";
@@ -42,6 +43,10 @@ describe("parseRetryAfterMs", () => {
 
 describe("SmartThingsClient", () => {
   const logger = pino({ level: "silent" });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   it("sends command payload for lock", async () => {
     const calls: RequestInit[] = [];
@@ -131,5 +136,73 @@ describe("SmartThingsClient", () => {
     } catch (error) {
       expect((error as SmartThingsApiError).status).toBe(401);
     }
+  });
+
+  it("times out SmartThings requests that exceed configured timeout", async () => {
+    vi.useFakeTimers();
+
+    const client = new SmartThingsClient({
+      token: "token",
+      deviceId: "device-1",
+      baseUrl: "https://example.test/v1",
+      logger,
+      requestTimeoutMs: 100,
+      fetchImpl: async (_input, init) => {
+        const signal = init?.signal as AbortSignal | undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        });
+      }
+    });
+
+    const statusPromise = expect(client.getLockStatus()).rejects.toBeInstanceOf(
+      SmartThingsRequestTimeoutError
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    await statusPromise;
+  });
+
+  it("throttles requests to stay within configured per-minute budget", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-20T00:00:00.000Z"));
+
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          components: {
+            main: {
+              lock: {
+                lock: {
+                  value: "locked"
+                }
+              }
+            }
+          }
+        }),
+        { status: 200 }
+      );
+    });
+
+    const client = new SmartThingsClient({
+      token: "token",
+      deviceId: "device-1",
+      baseUrl: "https://example.test/v1",
+      logger,
+      maxRequestsPerMinute: 1,
+      fetchImpl
+    });
+
+    await client.getLockStatus();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    const secondRequest = client.getLockStatus();
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await secondRequest;
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });

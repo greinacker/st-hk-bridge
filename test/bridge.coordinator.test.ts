@@ -26,14 +26,16 @@ describe("BridgeCoordinator", () => {
     vi.useRealTimers();
   });
 
-  it("marks state unknown when polling fails", async () => {
+  it("keeps last known state during a transient polling failure", async () => {
     const accessory = new FakeAccessory();
+    const getLockStatus = vi
+      .fn<() => Promise<"locked" | "unlocked" | "unknown">>()
+      .mockResolvedValueOnce("locked")
+      .mockRejectedValueOnce(new Error("boom"));
 
     const coordinator = new BridgeCoordinator({
       client: {
-        getLockStatus: vi.fn(async () => {
-          throw new Error("boom");
-        }),
+        getLockStatus,
         sendLockCommand: vi.fn()
       },
       accessory,
@@ -43,13 +45,50 @@ describe("BridgeCoordinator", () => {
       logger
     });
 
+    await coordinator.pollOnce();
     await expect(coordinator.pollOnce()).rejects.toThrow("boom");
+
+    const state = coordinator.getBridgeState();
+    expect(accessory.state).toBe("locked");
+    expect(state.status).toBe("degraded");
+    expect(state.currentMappedState).toBe("locked");
+    expect(state.lastPollError).toContain("boom");
+  });
+
+  it("marks state unknown after consecutive failures hit threshold", async () => {
+    const accessory = new FakeAccessory();
+    accessory.updateFromLockState("locked");
+
+    const getLockStatus = vi
+      .fn<() => Promise<"locked" | "unlocked" | "unknown">>()
+      .mockRejectedValueOnce(new Error("first failure"))
+      .mockRejectedValueOnce(new Error("second failure"));
+
+    const coordinator = new BridgeCoordinator({
+      client: {
+        getLockStatus,
+        sendLockCommand: vi.fn()
+      },
+      accessory,
+      pollIntervalMs: 30_000,
+      burstPollIntervalMs: 5_000,
+      burstDurationMs: 15_000,
+      pollFailuresBeforeUnknown: 2,
+      pollFailureGraceMs: 999_000,
+      initialMappedState: "locked",
+      logger
+    });
+
+    await expect(coordinator.pollOnce()).rejects.toThrow("first failure");
+    expect(accessory.state).toBe("locked");
+
+    await expect(coordinator.pollOnce()).rejects.toThrow("second failure");
 
     const state = coordinator.getBridgeState();
     expect(accessory.state).toBe("unknown");
     expect(state.status).toBe("degraded");
     expect(state.currentMappedState).toBe("unknown");
-    expect(state.lastPollError).toContain("boom");
+    expect(state.lastPollError).toContain("second failure");
   });
 
   it("recovers after failure and clears previous poll error", async () => {
@@ -57,6 +96,7 @@ describe("BridgeCoordinator", () => {
 
     const getLockStatus = vi
       .fn<() => Promise<"locked" | "unlocked" | "unknown">>()
+      .mockResolvedValueOnce("unlocked")
       .mockRejectedValueOnce(new Error("temporary failure"))
       .mockResolvedValueOnce("locked");
 
@@ -72,8 +112,8 @@ describe("BridgeCoordinator", () => {
       logger
     });
 
+    await coordinator.pollOnce();
     await expect(coordinator.pollOnce()).rejects.toThrow("temporary failure");
-
     await coordinator.pollOnce();
 
     const state = coordinator.getBridgeState();

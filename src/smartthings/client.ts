@@ -8,6 +8,9 @@ type FetchLike = typeof globalThis.fetch;
 type LoggerLike = Pick<Logger, "debug" | "warn">;
 
 const DEFAULT_RETRY_DELAY_MS = 1000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const DEFAULT_MAX_REQUESTS_PER_MINUTE = 10;
+const ONE_MINUTE_MS = 60_000;
 
 export interface SmartThingsClientLike {
   getLockStatus(): Promise<LockState>;
@@ -20,6 +23,8 @@ export interface SmartThingsClientOptions {
   baseUrl: string;
   fetchImpl?: FetchLike;
   logger: LoggerLike;
+  requestTimeoutMs?: number;
+  maxRequestsPerMinute?: number;
 }
 
 export class SmartThingsApiError extends Error {
@@ -31,6 +36,17 @@ export class SmartThingsApiError extends Error {
   ) {
     super(message);
     this.name = "SmartThingsApiError";
+  }
+}
+
+export class SmartThingsRequestTimeoutError extends Error {
+  constructor(
+    message: string,
+    public readonly endpoint: string,
+    public readonly timeoutMs: number
+  ) {
+    super(message);
+    this.name = "SmartThingsRequestTimeoutError";
   }
 }
 
@@ -75,6 +91,10 @@ export class SmartThingsClient implements SmartThingsClientLike {
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
   private readonly logger: LoggerLike;
+  private readonly requestTimeoutMs: number;
+  private readonly maxRequestsPerMinute: number;
+  private readonly requestTimestampsMs: number[] = [];
+  private rateLimitReservationChain: Promise<void> = Promise.resolve();
 
   constructor(options: SmartThingsClientOptions) {
     this.token = options.token;
@@ -82,6 +102,9 @@ export class SmartThingsClient implements SmartThingsClientLike {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.logger = options.logger;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.maxRequestsPerMinute =
+      options.maxRequestsPerMinute ?? DEFAULT_MAX_REQUESTS_PER_MINUTE;
   }
 
   async getLockStatus(): Promise<LockState> {
@@ -129,6 +152,8 @@ export class SmartThingsClient implements SmartThingsClientLike {
   }
 
   private async request(method: "GET" | "POST", endpoint: string, body?: unknown): Promise<Response> {
+    await this.reserveRateLimitSlot(endpoint);
+
     const url = `${this.baseUrl}${endpoint}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
@@ -145,8 +170,32 @@ export class SmartThingsClient implements SmartThingsClientLike {
       init.body = JSON.stringify(body);
     }
 
+    const timeoutController = new AbortController();
+    init.signal = timeoutController.signal;
+
+    const timeout = setTimeout(() => {
+      timeoutController.abort();
+    }, this.requestTimeoutMs);
+    if (typeof timeout.unref === "function") {
+      timeout.unref();
+    }
+
     this.logger.debug({ method, url }, "Calling SmartThings API");
-    return this.fetchImpl(url, init);
+    try {
+      return await this.fetchImpl(url, init);
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new SmartThingsRequestTimeoutError(
+          `SmartThings request timed out after ${this.requestTimeoutMs}ms.`,
+          endpoint,
+          this.requestTimeoutMs
+        );
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async buildApiError(response: Response, endpoint: string): Promise<SmartThingsApiError> {
@@ -170,6 +219,52 @@ export class SmartThingsClient implements SmartThingsClientLike {
 
     return new SmartThingsApiError(message, response.status, endpoint, compactBody || null);
   }
+
+  private async reserveRateLimitSlot(endpoint: string): Promise<void> {
+    const reservation = this.rateLimitReservationChain.then(async () => {
+      while (true) {
+        const now = Date.now();
+        const windowStart = now - ONE_MINUTE_MS;
+
+        while (
+          this.requestTimestampsMs.length > 0 &&
+          this.requestTimestampsMs[0] !== undefined &&
+          this.requestTimestampsMs[0] <= windowStart
+        ) {
+          this.requestTimestampsMs.shift();
+        }
+
+        if (this.requestTimestampsMs.length < this.maxRequestsPerMinute) {
+          this.requestTimestampsMs.push(now);
+          return;
+        }
+
+        const oldestTimestamp = this.requestTimestampsMs[0];
+        const waitMs = oldestTimestamp === undefined ? ONE_MINUTE_MS : oldestTimestamp + ONE_MINUTE_MS - now;
+
+        this.logger.warn(
+          {
+            endpoint,
+            waitMs,
+            maxRequestsPerMinute: this.maxRequestsPerMinute
+          },
+          "Delaying SmartThings request to stay within request budget"
+        );
+
+        await sleep(Math.max(waitMs, 1));
+      }
+    });
+
+    this.rateLimitReservationChain = reservation.catch(() => {
+      // Keep the chain alive if a reservation attempt fails.
+    });
+
+    await reservation;
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return !!error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError";
 }
 
 export { parseLockState, parseRetryAfterMs };
