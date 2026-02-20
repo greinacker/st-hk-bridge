@@ -73,6 +73,21 @@ cp docker-compose.example.yml docker-compose.yml
 docker compose up -d --build
 ```
 
+## Docker Deployment (Linux x86 Server)
+
+Build an image for a Linux x86_64 (`linux/amd64`) server:
+
+```bash
+docker buildx build --platform linux/amd64 -t st-hk-bridge:latest -t st-hk-bridge:$(git rev-parse --short HEAD) --load .
+```
+
+To stream image directly to a remote server without using a registry:
+
+```bash
+docker save st-hk-bridge:latest | gzip | ssh <servername> 'gunzip | docker load'
+```
+
+
 ## Pairing in Apple Home
 
 1. Open Apple Home.
