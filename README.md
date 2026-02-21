@@ -75,7 +75,7 @@ npm start
 ```bash
 cp docker-compose.example.yml docker-compose.yml
 # edit env values in docker-compose.yml
-docker compose up -d --build
+docker compose up -d
 ```
 
 ## Docker Deployment (Linux x86 Server)
@@ -83,7 +83,7 @@ docker compose up -d --build
 Build an image for a Linux x86_64 (`linux/amd64`) server:
 
 ```bash
-docker buildx build --platform linux/amd64 -t st-hk-bridge:latest -t st-hk-bridge:$(git rev-parse --short HEAD) --load .
+docker buildx build --platform linux/amd64 -t st-hk-bridge:latest --load .
 ```
 
 To stream image directly to a remote server without using a registry:
