@@ -1,6 +1,6 @@
 # st-hk-bridge
 
-Standalone SmartThings-to-HomeKit bridge for one lock device.
+Standalone SmartThings-to-HomeKit bridge for one lock device, tested with a Schlage zigbee lock specifically. The goal of this project is to provide a simple, standalone server to connect the device, without the additional complexity of other multi-purpose products.
 
 ## What it does
 
@@ -26,10 +26,10 @@ Standalone SmartThings-to-HomeKit bridge for one lock device.
 
 Required:
 
-- `SMARTTHINGS_TOKEN`
-- `SMARTTHINGS_DEVICE_ID`
-- `HOMEKIT_BRIDGE_NAME`
-- `HOMEKIT_USERNAME` (format `AA:BB:CC:DD:EE:FF`)
+- `SMARTTHINGS_TOKEN` (you can get this on the Smartthings developer site)
+- `SMARTTHINGS_DEVICE_ID` (see below)
+- `HOMEKIT_BRIDGE_NAME` (anything, e.g. "Front Door Lock")
+- `HOMEKIT_USERNAME` (format `AA:BB:CC:DD:EE:FF`, can be anything as long as it's in that format)
 - `HOMEKIT_SETUP_CODE` (format `123-45-678`)
 
 Optional:
