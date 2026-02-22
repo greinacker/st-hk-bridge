@@ -8,8 +8,10 @@ import {
   uuid
 } from "hap-nodejs";
 import type { Logger } from "pino";
+import type { HomekitAdvertiser } from "../config";
 import type { LockCommandTarget } from "../smartthings/client";
 import type { LockState } from "../types";
+import { resolveHomekitBind } from "./networkBind";
 
 export type DesiredLockState = Exclude<LockState, "unknown">;
 
@@ -18,6 +20,9 @@ export interface LockAccessoryOptions {
   homekitUsername: string;
   homekitSetupCode: string;
   homekitPort: number;
+  homekitAdvertiser: HomekitAdvertiser;
+  homekitBind: string[];
+  homekitAutoBind: boolean;
   transitionTimeoutMs?: number;
   deviceId: string;
   logger: Pick<Logger, "info" | "warn">;
@@ -66,6 +71,9 @@ export class LockAccessory implements LockStateSink {
   private readonly homekitUsername: string;
   private readonly homekitSetupCode: string;
   private readonly homekitPort: number;
+  private readonly homekitAdvertiser: HomekitAdvertiser;
+  private readonly homekitBind: string[];
+  private readonly homekitAutoBind: boolean;
   private readonly transitionTimeoutMs: number;
   private readonly logger: Pick<Logger, "info" | "warn">;
   private readonly commandHandler: (target: LockCommandTarget) => Promise<void>;
@@ -81,6 +89,9 @@ export class LockAccessory implements LockStateSink {
     this.homekitUsername = options.homekitUsername;
     this.homekitSetupCode = options.homekitSetupCode;
     this.homekitPort = options.homekitPort;
+    this.homekitAdvertiser = options.homekitAdvertiser;
+    this.homekitBind = options.homekitBind;
+    this.homekitAutoBind = options.homekitAutoBind;
     this.transitionTimeoutMs = options.transitionTimeoutMs ?? 30_000;
     this.logger = options.logger;
     this.commandHandler = options.commandHandler;
@@ -127,11 +138,30 @@ export class LockAccessory implements LockStateSink {
       return;
     }
 
+    const bindDecision = resolveHomekitBind(this.homekitBind, this.homekitAutoBind);
+    const bindSummary = bindDecision.bind ? bindDecision.bind.join(",") : "unrestricted";
+    this.logger.info(
+      {
+        advertiser: this.homekitAdvertiser,
+        bindSource: bindDecision.source,
+        bind: bindSummary,
+        port: this.homekitPort
+      },
+      "Publishing HomeKit lock accessory"
+    );
+    if (!bindDecision.bind && this.homekitAutoBind) {
+      this.logger.warn(
+        "HomeKit auto-bind found no suitable LAN interface; publishing without bind restrictions"
+      );
+    }
+
     await this.accessory.publish({
       username: this.homekitUsername,
       pincode: this.homekitSetupCode,
       category: Categories.DOOR_LOCK,
-      port: this.homekitPort
+      port: this.homekitPort,
+      advertiser: this.homekitAdvertiser as Parameters<Accessory["publish"]>[0]["advertiser"],
+      ...(bindDecision.bind ? { bind: bindDecision.bind } : {})
     });
 
     this.published = true;

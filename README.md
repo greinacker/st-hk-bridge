@@ -44,6 +44,9 @@ Optional:
 - `SMARTTHINGS_MAX_REQUESTS_PER_MINUTE` (default `10`)
 - `SMARTTHINGS_API_BASE` (default `https://api.smartthings.com/v1`)
 - `HOMEKIT_PORT` (default `51826`)
+- `HOMEKIT_AUTO_BIND` (default `true`) auto-selects a LAN interface when `HOMEKIT_BIND` is empty
+- `HOMEKIT_BIND` (default empty) explicit interface/address list, comma-separated (example `eno1` or `en0,eno1`)
+- `HOMEKIT_ADVERTISER` (default `ciao`) one of `ciao`, `bonjour-hap`, `avahi`, `resolved`
 - `DATA_DIR` (default `/data`)
 - `LOG_LEVEL` (default `info`)
 - `HEALTH_PORT` (default `8080`)
@@ -77,6 +80,40 @@ cp docker-compose.example.yml docker-compose.yml
 # edit env values in docker-compose.yml
 docker compose up -d
 ```
+
+## Ubuntu Docker HomeKit Reachability
+
+If the bridge appears in Apple Home but add/pair fails with `destination unreachable`, the HAP endpoint is
+usually being advertised on an interface Apple devices cannot route to.
+
+Requirements:
+
+- Keep `network_mode: host`.
+- Ensure LAN reachability to `HOMEKIT_PORT` (TCP).
+- Ensure mDNS multicast path on UDP `5353`.
+
+Validation on Ubuntu host:
+
+```bash
+avahi-browse -rt _hap._tcp
+ss -lntup | grep "${HOMEKIT_PORT:-51826}"
+```
+
+Validation from another LAN device:
+
+```bash
+nc -vz <ubuntu_lan_ip> <HOMEKIT_PORT>
+```
+
+Override examples:
+
+- `HOMEKIT_BIND=eno1` (Ubuntu)
+- `HOMEKIT_BIND=en0` (macOS)
+- `HOMEKIT_BIND=en0,eno1` (shared env across hosts)
+
+Advertiser fallback:
+
+- If `ciao` still fails in your environment, set `HOMEKIT_ADVERTISER=bonjour-hap` and restart.
 
 ## Docker Deployment (Linux x86 Server)
 
@@ -124,3 +161,4 @@ npm test
 - SmartThings device API rate limit is 12 requests/minute per device. This bridge defaults to `SMARTTHINGS_MAX_REQUESTS_PER_MINUTE=10` and will delay requests when needed to stay within that budget.
 - Default polling is 2 requests/minute, and each command burst adds up to 2-3 extra status polls in the short burst window.
 - For Docker deployments on Linux/NAS, host networking improves HomeKit discovery reliability.
+- No internet exposure is required; HomeKit traffic should remain LAN-local while still allowing local reachability to `HOMEKIT_PORT` and mDNS (UDP `5353`).

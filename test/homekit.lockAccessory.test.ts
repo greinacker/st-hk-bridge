@@ -1,4 +1,5 @@
-import { Characteristic, HAPStatus, HapStatusError } from "hap-nodejs";
+import { Accessory, Characteristic, HAPStatus, HapStatusError } from "hap-nodejs";
+import os from "node:os";
 import pino from "pino";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -12,13 +13,21 @@ const logger = pino({ level: "silent" });
 
 function createAccessory(
   commandHandler: (target: LockCommandTarget) => Promise<void>,
-  options?: { transitionTimeoutMs?: number }
+  options?: {
+    transitionTimeoutMs?: number;
+    homekitAdvertiser?: "ciao" | "bonjour-hap" | "avahi" | "resolved";
+    homekitBind?: string[];
+    homekitAutoBind?: boolean;
+  }
 ): LockAccessory {
   return new LockAccessory({
     bridgeName: "Front Door Lock",
     homekitUsername: "AA:BB:CC:DD:EE:FF",
     homekitSetupCode: "123-45-678",
     homekitPort: 51826,
+    homekitAdvertiser: options?.homekitAdvertiser ?? "ciao",
+    homekitBind: options?.homekitBind ?? [],
+    homekitAutoBind: options?.homekitAutoBind ?? true,
     transitionTimeoutMs: options?.transitionTimeoutMs,
     deviceId: "device-1",
     logger,
@@ -52,6 +61,7 @@ describe("LockAccessory mapping", () => {
 describe("LockAccessory command behavior", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("uses confirm-only flow for commands", async () => {
@@ -147,5 +157,70 @@ describe("LockAccessory command behavior", () => {
 
     await vi.advanceTimersByTimeAsync(30_000);
     expect(accessory.getTargetState()).toBe("unlocked");
+  });
+
+  it("passes advertiser and explicit bind to publish", async () => {
+    const publishSpy = vi.spyOn(Accessory.prototype, "publish").mockResolvedValue(undefined);
+    const accessory = createAccessory(async () => {}, {
+      homekitAdvertiser: "bonjour-hap",
+      homekitBind: ["eno1"],
+      homekitAutoBind: true
+    });
+
+    await accessory.publish();
+
+    expect(publishSpy).toHaveBeenCalledTimes(1);
+    const publishInfo = publishSpy.mock.calls[0]?.[0];
+    expect(publishInfo.advertiser).toBe("bonjour-hap");
+    expect(publishInfo.bind).toEqual(["eno1"]);
+  });
+
+  it("uses auto-selected bind interface during publish when bind is empty", async () => {
+    const publishSpy = vi.spyOn(Accessory.prototype, "publish").mockResolvedValue(undefined);
+    vi.spyOn(os, "networkInterfaces").mockReturnValue({
+      docker0: [
+        {
+          address: "172.17.0.1",
+          netmask: "255.255.0.0",
+          family: "IPv4",
+          mac: "00:00:00:00:00:00",
+          internal: false,
+          cidr: "172.17.0.1/16"
+        }
+      ],
+      eno1: [
+        {
+          address: "192.168.1.10",
+          netmask: "255.255.255.0",
+          family: "IPv4",
+          mac: "00:11:22:33:44:55",
+          internal: false,
+          cidr: "192.168.1.10/24"
+        }
+      ]
+    });
+
+    const accessory = createAccessory(async () => {}, {
+      homekitBind: [],
+      homekitAutoBind: true
+    });
+
+    await accessory.publish();
+
+    const publishInfo = publishSpy.mock.calls[0]?.[0];
+    expect(publishInfo.bind).toEqual(["eno1"]);
+  });
+
+  it("omits bind when auto-bind is disabled and bind is empty", async () => {
+    const publishSpy = vi.spyOn(Accessory.prototype, "publish").mockResolvedValue(undefined);
+    const accessory = createAccessory(async () => {}, {
+      homekitBind: [],
+      homekitAutoBind: false
+    });
+
+    await accessory.publish();
+
+    const publishInfo = publishSpy.mock.calls[0]?.[0];
+    expect(publishInfo.bind).toBeUndefined();
   });
 });

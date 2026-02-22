@@ -26,6 +26,9 @@ describe("loadConfig", () => {
     expect(config.smartThingsMaxRequestsPerMinute).toBe(10);
     expect(config.smartThingsApiBase).toBe("https://api.smartthings.com/v1");
     expect(config.homeKitPort).toBe(51826);
+    expect(config.homeKitAdvertiser).toBe("ciao");
+    expect(config.homeKitBind).toEqual([]);
+    expect(config.homeKitAutoBind).toBe(true);
     expect(config.healthPort).toBe(8080);
   });
 
@@ -51,5 +54,30 @@ describe("loadConfig", () => {
     expect(() => {
       loadConfig({ ...validEnv, POLL_FAILURES_BEFORE_UNKNOWN: "0" });
     }).toThrow(/POLL_FAILURES_BEFORE_UNKNOWN/);
+  });
+
+  it("parses homekit advertiser, bind list, and auto-bind", () => {
+    const config = loadConfig({
+      ...validEnv,
+      HOMEKIT_ADVERTISER: "avahi",
+      HOMEKIT_BIND: "eno1, en0",
+      HOMEKIT_AUTO_BIND: "false"
+    });
+
+    expect(config.homeKitAdvertiser).toBe("avahi");
+    expect(config.homeKitBind).toEqual(["eno1", "en0"]);
+    expect(config.homeKitAutoBind).toBe(false);
+  });
+
+  it("fails for invalid homekit advertiser", () => {
+    expect(() => {
+      loadConfig({ ...validEnv, HOMEKIT_ADVERTISER: "bad-option" });
+    }).toThrow(/HOMEKIT_ADVERTISER/);
+  });
+
+  it("fails for invalid homekit auto-bind value", () => {
+    expect(() => {
+      loadConfig({ ...validEnv, HOMEKIT_AUTO_BIND: "yes" });
+    }).toThrow(/HOMEKIT_AUTO_BIND/);
   });
 });

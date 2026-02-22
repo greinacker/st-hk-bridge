@@ -1,5 +1,49 @@
 import { z } from "zod";
 
+export type HomekitAdvertiser = "ciao" | "bonjour-hap" | "avahi" | "resolved";
+
+function parseHomekitAutoBind(value: unknown): boolean {
+  if (value === undefined || value === null || `${value}`.trim() === "") {
+    return true;
+  }
+
+  const normalized = `${value}`.trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+
+  throw new Error("HOMEKIT_AUTO_BIND must be true or false");
+}
+
+function parseHomekitBind(value: unknown): string[] {
+  if (value === undefined || value === null || `${value}`.trim() === "") {
+    return [];
+  }
+
+  return `${value}`
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function parseHomekitAdvertiser(value: unknown): HomekitAdvertiser {
+  const raw = value === undefined || value === null || `${value}`.trim() === "" ? "ciao" : `${value}`;
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === "ciao" ||
+    normalized === "bonjour-hap" ||
+    normalized === "avahi" ||
+    normalized === "resolved"
+  ) {
+    return normalized;
+  }
+
+  throw new Error("HOMEKIT_ADVERTISER must be one of ciao, bonjour-hap, avahi, resolved");
+}
+
 const rawConfigSchema = z.object({
   SMARTTHINGS_TOKEN: z.string().min(1, "SMARTTHINGS_TOKEN is required"),
   SMARTTHINGS_DEVICE_ID: z.string().min(1, "SMARTTHINGS_DEVICE_ID is required"),
@@ -25,6 +69,38 @@ const rawConfigSchema = z.object({
     .default("https://api.smartthings.com/v1")
     .transform((value) => value.replace(/\/+$/, "")),
   HOMEKIT_PORT: z.coerce.number().int().min(1).max(65535).default(51826),
+  HOMEKIT_ADVERTISER: z
+    .unknown()
+    .optional()
+    .transform((value, ctx) => {
+      try {
+        return parseHomekitAdvertiser(value);
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: (error as Error).message
+        });
+        return z.NEVER;
+      }
+    }),
+  HOMEKIT_BIND: z
+    .unknown()
+    .optional()
+    .transform((value) => parseHomekitBind(value)),
+  HOMEKIT_AUTO_BIND: z
+    .unknown()
+    .optional()
+    .transform((value, ctx) => {
+      try {
+        return parseHomekitAutoBind(value);
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: (error as Error).message
+        });
+        return z.NEVER;
+      }
+    }),
   DATA_DIR: z.string().min(1).default("/data"),
   LOG_LEVEL: z.string().min(1).default("info"),
   HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(8080)
@@ -38,6 +114,9 @@ export interface AppConfig {
   homeKitUsername: string;
   homeKitSetupCode: string;
   homeKitPort: number;
+  homeKitAdvertiser: HomekitAdvertiser;
+  homeKitBind: string[];
+  homeKitAutoBind: boolean;
   pollIntervalMs: number;
   commandBurstPollIntervalMs: number;
   commandBurstDurationMs: number;
@@ -70,6 +149,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     homeKitUsername: parsed.data.HOMEKIT_USERNAME,
     homeKitSetupCode: parsed.data.HOMEKIT_SETUP_CODE,
     homeKitPort: parsed.data.HOMEKIT_PORT,
+    homeKitAdvertiser: parsed.data.HOMEKIT_ADVERTISER,
+    homeKitBind: parsed.data.HOMEKIT_BIND,
+    homeKitAutoBind: parsed.data.HOMEKIT_AUTO_BIND,
     pollIntervalMs: parsed.data.POLL_INTERVAL_SECONDS * 1000,
     commandBurstPollIntervalMs: parsed.data.COMMAND_BURST_POLL_INTERVAL_SECONDS * 1000,
     commandBurstDurationMs: parsed.data.COMMAND_BURST_DURATION_SECONDS * 1000,
