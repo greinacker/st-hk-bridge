@@ -117,7 +117,7 @@ Advertiser fallback:
 
 ## Docker Deployment (Linux x86 Server)
 
-Build an image for a Linux x86_64 (`linux/amd64`) server:
+Build an image on a Mac with Apple Silicon for a Linux x86_64 (`linux/amd64`) server:
 
 ```bash
 docker buildx build --platform linux/amd64 -t st-hk-bridge:latest --load .
