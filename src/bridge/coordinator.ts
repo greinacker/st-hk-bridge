@@ -42,8 +42,11 @@ export class BridgeCoordinator {
   private readonly onObservedState?: (state: LockState) => Promise<void> | void;
   private readonly logger: Pick<Logger, "debug" | "warn">;
 
-  private pollTimer: NodeJS.Timeout | null = null;
-  private burstTimer: NodeJS.Timeout | null = null;
+  private schedulerTimer: NodeJS.Timeout | null = null;
+  private schedulerTimerDueAtMs: number | null = null;
+  private regularPollingEnabled = false;
+  private nextRegularPollAtMs: number | null = null;
+  private nextBurstPollAtMs: number | null = null;
   private burstWindowEndsAtMs: number | null = null;
   private burstTargetState: Exclude<LockState, "unknown"> | null = null;
   private pollInFlight = false;
@@ -73,34 +76,27 @@ export class BridgeCoordinator {
   }
 
   start(): void {
-    if (this.pollTimer) {
+    if (this.regularPollingEnabled) {
       return;
     }
 
-    this.pollTimer = setInterval(() => {
-      void this.pollOnce().catch(() => {
-        // poll errors are reflected in bridge state and logged in pollOnce
-      });
-    }, this.pollIntervalMs);
-
-    if (typeof this.pollTimer.unref === "function") {
-      this.pollTimer.unref();
-    }
+    this.regularPollingEnabled = true;
+    this.nextRegularPollAtMs = Date.now() + this.pollIntervalMs;
+    this.armNextTimer();
   }
 
   stop(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-
-    this.stopBurstPolling();
+    this.regularPollingEnabled = false;
+    this.nextRegularPollAtMs = null;
+    this.clearBurstState();
+    this.stopSchedulerTimer();
   }
 
   triggerCommandPollBurst(targetState: Exclude<LockState, "unknown">): void {
     const now = Date.now();
     this.burstWindowEndsAtMs = now + this.burstDurationMs;
     this.burstTargetState = targetState;
+    this.nextBurstPollAtMs ??= now + this.burstPollIntervalMs;
 
     this.logger.debug(
       {
@@ -111,24 +107,7 @@ export class BridgeCoordinator {
       "Starting or extending command burst polling window"
     );
 
-    if (this.burstTimer) {
-      return;
-    }
-
-    this.burstTimer = setInterval(() => {
-      if (this.burstWindowEndsAtMs === null || Date.now() >= this.burstWindowEndsAtMs) {
-        this.stopBurstPolling();
-        return;
-      }
-
-      void this.pollOnce().catch(() => {
-        // burst poll errors are reflected in bridge state and logged in pollOnce
-      });
-    }, this.burstPollIntervalMs);
-
-    if (typeof this.burstTimer.unref === "function") {
-      this.burstTimer.unref();
-    }
+    this.armNextTimer();
   }
 
   async pollOnce(): Promise<void> {
@@ -159,7 +138,8 @@ export class BridgeCoordinator {
           { observedState: state, burstTargetState: this.burstTargetState },
           "Burst polling target state observed; ending burst polling window"
         );
-        this.stopBurstPolling();
+        this.clearBurstState();
+        this.armNextTimer();
       }
     } catch (error) {
       const now = Date.now();
@@ -206,6 +186,95 @@ export class BridgeCoordinator {
     return { ...this.bridgeState };
   }
 
+  private armNextTimer(): void {
+    const now = Date.now();
+    if (this.burstWindowEndsAtMs !== null && now >= this.burstWindowEndsAtMs) {
+      this.clearBurstState();
+    }
+
+    let nextDueAtMs: number | null = null;
+
+    if (this.regularPollingEnabled) {
+      this.nextRegularPollAtMs ??= now + this.pollIntervalMs;
+      nextDueAtMs = this.nextRegularPollAtMs;
+    }
+
+    if (this.nextBurstPollAtMs !== null) {
+      nextDueAtMs = nextDueAtMs === null ? this.nextBurstPollAtMs : Math.min(nextDueAtMs, this.nextBurstPollAtMs);
+    }
+
+    if (
+      this.schedulerTimer &&
+      this.schedulerTimerDueAtMs !== null &&
+      this.schedulerTimerDueAtMs === nextDueAtMs
+    ) {
+      return;
+    }
+
+    this.stopSchedulerTimer();
+
+    if (nextDueAtMs === null) {
+      return;
+    }
+
+    const delayMs = Math.max(0, nextDueAtMs - now);
+    this.schedulerTimerDueAtMs = nextDueAtMs;
+    this.schedulerTimer = setTimeout(() => {
+      void this.runScheduledPoll().catch(() => {
+        // Scheduler poll errors are reflected in bridge state and logged in pollOnce.
+      });
+    }, delayMs);
+
+    if (typeof this.schedulerTimer.unref === "function") {
+      this.schedulerTimer.unref();
+    }
+  }
+
+  private async runScheduledPoll(): Promise<void> {
+    this.stopSchedulerTimer();
+
+    const now = Date.now();
+    if (this.burstWindowEndsAtMs !== null && now >= this.burstWindowEndsAtMs) {
+      this.clearBurstState();
+    }
+
+    const dueRegularPoll = this.nextRegularPollAtMs !== null && now >= this.nextRegularPollAtMs;
+    const dueBurstPoll = this.nextBurstPollAtMs !== null && now >= this.nextBurstPollAtMs;
+
+    if (!dueRegularPoll && !dueBurstPoll) {
+      this.armNextTimer();
+      return;
+    }
+
+    if (dueRegularPoll) {
+      this.nextRegularPollAtMs = now + this.pollIntervalMs;
+    }
+
+    if (dueBurstPoll) {
+      this.nextBurstPollAtMs = now + this.burstPollIntervalMs;
+    }
+
+    await this.pollOnce().catch(() => {
+      // Scheduler poll errors are reflected in bridge state and logged in pollOnce.
+    });
+    this.armNextTimer();
+  }
+
+  private clearBurstState(): void {
+    this.burstWindowEndsAtMs = null;
+    this.nextBurstPollAtMs = null;
+    this.burstTargetState = null;
+  }
+
+  private stopSchedulerTimer(): void {
+    if (this.schedulerTimer) {
+      clearTimeout(this.schedulerTimer);
+      this.schedulerTimer = null;
+    }
+
+    this.schedulerTimerDueAtMs = null;
+  }
+
   private setHealthyState(state: LockState): void {
     this.bridgeState = {
       status: state === "unknown" ? "degraded" : "ok",
@@ -222,17 +291,5 @@ export class BridgeCoordinator {
       currentMappedState,
       lastPollError: message
     };
-  }
-
-  private stopBurstPolling(): void {
-    if (!this.burstTimer) {
-      this.burstWindowEndsAtMs = null;
-      return;
-    }
-
-    clearInterval(this.burstTimer);
-    this.burstTimer = null;
-    this.burstWindowEndsAtMs = null;
-    this.burstTargetState = null;
   }
 }
