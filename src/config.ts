@@ -73,7 +73,6 @@ const rawConfigSchema = z.object({
   SMARTTHINGS_REQUEST_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(120).default(15),
   SMARTTHINGS_MAX_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(10),
   SMARTTHINGS_API_BASE: z
-    .string()
     .url("SMARTTHINGS_API_BASE must be a valid URL")
     .default("https://api.smartthings.com/v1")
     .transform((value) => value.replace(/\/+$/, "")),
