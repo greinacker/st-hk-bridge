@@ -1,48 +1,57 @@
 import { z } from "zod";
 
-export type HomekitAdvertiser = "ciao" | "bonjour-hap" | "avahi" | "resolved";
+const HOMEKIT_ADVERTISERS = ["ciao", "bonjour-hap", "avahi", "resolved"] as const;
 
-function parseHomekitAutoBind(value: unknown): boolean {
-  if (value === undefined || value === null || `${value}`.trim() === "") {
-    return true;
-  }
+export type HomekitAdvertiser = (typeof HOMEKIT_ADVERTISERS)[number];
 
-  const normalized = `${value}`.trim().toLowerCase();
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-
-  throw new Error("HOMEKIT_AUTO_BIND must be true or false");
+function normalizeEnvString(value: unknown): string {
+  return `${value ?? ""}`.trim();
 }
 
-function parseHomekitBind(value: unknown): string[] {
-  if (value === undefined || value === null || `${value}`.trim() === "") {
+function toMilliseconds(seconds: number): number {
+  return seconds * 1000;
+}
+
+const homekitAdvertiserSchema = z.preprocess(
+  (value) => {
+    const normalized = normalizeEnvString(value).toLowerCase();
+    return normalized === "" ? "ciao" : normalized;
+  },
+  z
+    .string()
+    .refine(
+      (value): value is HomekitAdvertiser =>
+        HOMEKIT_ADVERTISERS.includes(value as HomekitAdvertiser),
+      {
+        message: "HOMEKIT_ADVERTISER must be one of ciao, bonjour-hap, avahi, resolved"
+      }
+    )
+);
+
+const homekitBindSchema = z.preprocess((value) => {
+  const normalized = normalizeEnvString(value);
+  if (normalized === "") {
     return [];
   }
 
-  return `${value}`
+  return normalized
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
-}
+}, z.array(z.string()));
 
-function parseHomekitAdvertiser(value: unknown): HomekitAdvertiser {
-  const raw = value === undefined || value === null || `${value}`.trim() === "" ? "ciao" : `${value}`;
-  const normalized = raw.trim().toLowerCase();
-  if (
-    normalized === "ciao" ||
-    normalized === "bonjour-hap" ||
-    normalized === "avahi" ||
-    normalized === "resolved"
-  ) {
-    return normalized;
-  }
-
-  throw new Error("HOMEKIT_ADVERTISER must be one of ciao, bonjour-hap, avahi, resolved");
-}
+const homekitAutoBindSchema = z.preprocess(
+  (value) => {
+    const normalized = normalizeEnvString(value).toLowerCase();
+    return normalized === "" ? "true" : normalized;
+  },
+  z
+    .string()
+    .refine((value) => value === "true" || value === "false", {
+      message: "HOMEKIT_AUTO_BIND must be true or false"
+    })
+    .transform((value) => value === "true")
+);
 
 const rawConfigSchema = z.object({
   SMARTTHINGS_TOKEN: z.string().min(1, "SMARTTHINGS_TOKEN is required"),
@@ -69,42 +78,37 @@ const rawConfigSchema = z.object({
     .default("https://api.smartthings.com/v1")
     .transform((value) => value.replace(/\/+$/, "")),
   HOMEKIT_PORT: z.coerce.number().int().min(1).max(65535).default(51826),
-  HOMEKIT_ADVERTISER: z
-    .unknown()
-    .optional()
-    .transform((value, ctx) => {
-      try {
-        return parseHomekitAdvertiser(value);
-      } catch (error) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: (error as Error).message
-        });
-        return z.NEVER;
-      }
-    }),
-  HOMEKIT_BIND: z
-    .unknown()
-    .optional()
-    .transform((value) => parseHomekitBind(value)),
-  HOMEKIT_AUTO_BIND: z
-    .unknown()
-    .optional()
-    .transform((value, ctx) => {
-      try {
-        return parseHomekitAutoBind(value);
-      } catch (error) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: (error as Error).message
-        });
-        return z.NEVER;
-      }
-    }),
+  HOMEKIT_ADVERTISER: homekitAdvertiserSchema,
+  HOMEKIT_BIND: homekitBindSchema,
+  HOMEKIT_AUTO_BIND: homekitAutoBindSchema,
   DATA_DIR: z.string().min(1).default("/data"),
   LOG_LEVEL: z.string().min(1).default("info"),
   HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(8080)
 });
+
+const configSchema = rawConfigSchema.transform((data): AppConfig => ({
+  smartThingsToken: data.SMARTTHINGS_TOKEN,
+  smartThingsDeviceId: data.SMARTTHINGS_DEVICE_ID,
+  smartThingsApiBase: data.SMARTTHINGS_API_BASE,
+  homeKitBridgeName: data.HOMEKIT_BRIDGE_NAME,
+  homeKitUsername: data.HOMEKIT_USERNAME,
+  homeKitSetupCode: data.HOMEKIT_SETUP_CODE,
+  homeKitPort: data.HOMEKIT_PORT,
+  homeKitAdvertiser: data.HOMEKIT_ADVERTISER,
+  homeKitBind: data.HOMEKIT_BIND,
+  homeKitAutoBind: data.HOMEKIT_AUTO_BIND,
+  pollIntervalMs: toMilliseconds(data.POLL_INTERVAL_SECONDS),
+  commandBurstPollIntervalMs: toMilliseconds(data.COMMAND_BURST_POLL_INTERVAL_SECONDS),
+  commandBurstDurationMs: toMilliseconds(data.COMMAND_BURST_DURATION_SECONDS),
+  transitionTimeoutMs: toMilliseconds(data.TRANSITION_TIMEOUT_SECONDS),
+  pollFailuresBeforeUnknown: data.POLL_FAILURES_BEFORE_UNKNOWN,
+  pollFailureGraceMs: toMilliseconds(data.POLL_FAILURE_GRACE_SECONDS),
+  smartThingsRequestTimeoutMs: toMilliseconds(data.SMARTTHINGS_REQUEST_TIMEOUT_SECONDS),
+  smartThingsMaxRequestsPerMinute: data.SMARTTHINGS_MAX_REQUESTS_PER_MINUTE,
+  dataDir: data.DATA_DIR,
+  logLevel: data.LOG_LEVEL,
+  healthPort: data.HEALTH_PORT
+}));
 
 export interface AppConfig {
   smartThingsToken: string;
@@ -135,33 +139,11 @@ function formatZodErrors(error: z.ZodError): string {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  const parsed = rawConfigSchema.safeParse(env);
+  const parsed = configSchema.safeParse(env);
 
   if (!parsed.success) {
     throw new Error(`Invalid configuration: ${formatZodErrors(parsed.error)}`);
   }
 
-  return {
-    smartThingsToken: parsed.data.SMARTTHINGS_TOKEN,
-    smartThingsDeviceId: parsed.data.SMARTTHINGS_DEVICE_ID,
-    smartThingsApiBase: parsed.data.SMARTTHINGS_API_BASE,
-    homeKitBridgeName: parsed.data.HOMEKIT_BRIDGE_NAME,
-    homeKitUsername: parsed.data.HOMEKIT_USERNAME,
-    homeKitSetupCode: parsed.data.HOMEKIT_SETUP_CODE,
-    homeKitPort: parsed.data.HOMEKIT_PORT,
-    homeKitAdvertiser: parsed.data.HOMEKIT_ADVERTISER,
-    homeKitBind: parsed.data.HOMEKIT_BIND,
-    homeKitAutoBind: parsed.data.HOMEKIT_AUTO_BIND,
-    pollIntervalMs: parsed.data.POLL_INTERVAL_SECONDS * 1000,
-    commandBurstPollIntervalMs: parsed.data.COMMAND_BURST_POLL_INTERVAL_SECONDS * 1000,
-    commandBurstDurationMs: parsed.data.COMMAND_BURST_DURATION_SECONDS * 1000,
-    transitionTimeoutMs: parsed.data.TRANSITION_TIMEOUT_SECONDS * 1000,
-    pollFailuresBeforeUnknown: parsed.data.POLL_FAILURES_BEFORE_UNKNOWN,
-    pollFailureGraceMs: parsed.data.POLL_FAILURE_GRACE_SECONDS * 1000,
-    smartThingsRequestTimeoutMs: parsed.data.SMARTTHINGS_REQUEST_TIMEOUT_SECONDS * 1000,
-    smartThingsMaxRequestsPerMinute: parsed.data.SMARTTHINGS_MAX_REQUESTS_PER_MINUTE,
-    dataDir: parsed.data.DATA_DIR,
-    logLevel: parsed.data.LOG_LEVEL,
-    healthPort: parsed.data.HEALTH_PORT
-  };
+  return parsed.data;
 }
