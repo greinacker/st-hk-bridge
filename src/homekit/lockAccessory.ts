@@ -11,9 +11,10 @@ import type { Logger } from "pino";
 import type { HomekitAdvertiser } from "../config";
 import type { LockCommandTarget } from "../smartthings/client";
 import type { LockState } from "../types";
+import { LockStateMachine, type DesiredLockState } from "./lockStateMachine";
 import { resolveHomekitBind } from "./networkBind";
 
-export type DesiredLockState = Exclude<LockState, "unknown">;
+export type { DesiredLockState } from "./lockStateMachine";
 
 export interface LockAccessoryOptions {
   bridgeName: string;
@@ -78,9 +79,7 @@ export class LockAccessory implements LockStateSink {
   private readonly logger: Pick<Logger, "info" | "warn">;
   private readonly commandHandler: (target: LockCommandTarget) => Promise<void>;
 
-  private currentState: LockState = "unknown";
-  private targetState: DesiredLockState = "locked";
-  private pendingTargetState: DesiredLockState | null = null;
+  private readonly stateMachine = new LockStateMachine();
   private transitionTimeoutTimer: NodeJS.Timeout | null = null;
   private commandInFlight = false;
   private published = false;
@@ -113,24 +112,18 @@ export class LockAccessory implements LockStateSink {
 
     this.lockService
       .getCharacteristic(Characteristic.LockCurrentState)
-      .onGet(() => mapLockStateToCurrentCharacteristicValue(this.currentState));
+      .onGet(() => mapLockStateToCurrentCharacteristicValue(this.stateMachine.getCurrentState()));
 
     this.lockService
       .getCharacteristic(Characteristic.LockTargetState)
-      .onGet(() => mapDesiredLockStateToTargetCharacteristicValue(this.targetState))
+      .onGet(() => mapDesiredLockStateToTargetCharacteristicValue(this.stateMachine.getTargetState()))
       .onSet(async (value) => {
         const desiredState = mapTargetCharacteristicValueToDesiredState(value);
         await this.requestTargetState(desiredState);
       });
 
-    this.lockService.updateCharacteristic(
-      Characteristic.LockCurrentState,
-      mapLockStateToCurrentCharacteristicValue(this.currentState)
-    );
-    this.lockService.updateCharacteristic(
-      Characteristic.LockTargetState,
-      mapDesiredLockStateToTargetCharacteristicValue(this.targetState)
-    );
+    this.updateCurrentStateCharacteristic();
+    this.updateTargetStateCharacteristic();
   }
 
   async publish(): Promise<void> {
@@ -180,45 +173,30 @@ export class LockAccessory implements LockStateSink {
   }
 
   updateFromLockState(state: LockState): void {
-    this.currentState = state;
+    const observedStateResult = this.stateMachine.observeLockState(state);
 
-    if (state !== "unknown") {
-      if (this.pendingTargetState !== null) {
-        if (state === this.pendingTargetState) {
-          this.targetState = state;
-          this.pendingTargetState = null;
-          this.clearTransitionTimeout();
-        }
-      } else {
-        this.targetState = state;
-      }
-
-      this.lockService.updateCharacteristic(
-        Characteristic.LockTargetState,
-        mapDesiredLockStateToTargetCharacteristicValue(this.targetState)
-      );
+    if (observedStateResult.shouldClearTransitionTimeout) {
+      this.clearTransitionTimeout();
     }
 
-    this.lockService.updateCharacteristic(
-      Characteristic.LockCurrentState,
-      mapLockStateToCurrentCharacteristicValue(this.currentState)
-    );
+    if (observedStateResult.shouldUpdateTargetStateCharacteristic) {
+      this.updateTargetStateCharacteristic();
+    }
+
+    this.updateCurrentStateCharacteristic();
   }
 
   setUnknownState(): void {
-    this.currentState = "unknown";
-    this.lockService.updateCharacteristic(
-      Characteristic.LockCurrentState,
-      mapLockStateToCurrentCharacteristicValue("unknown")
-    );
+    this.stateMachine.setUnknownState();
+    this.updateCurrentStateCharacteristic();
   }
 
   getCurrentMappedState(): LockState {
-    return this.currentState;
+    return this.stateMachine.getCurrentState();
   }
 
   getTargetState(): DesiredLockState {
-    return this.targetState;
+    return this.stateMachine.getTargetState();
   }
 
   async requestTargetState(targetState: DesiredLockState): Promise<void> {
@@ -232,13 +210,9 @@ export class LockAccessory implements LockStateSink {
       const command: LockCommandTarget = targetState === "locked" ? "lock" : "unlock";
       await this.commandHandler(command);
 
-      this.targetState = targetState;
-      this.pendingTargetState = targetState;
+      this.stateMachine.beginTransition(targetState);
       this.startTransitionTimeout(targetState);
-      this.lockService.updateCharacteristic(
-        Characteristic.LockTargetState,
-        mapDesiredLockStateToTargetCharacteristicValue(this.targetState)
-      );
+      this.updateTargetStateCharacteristic();
     } catch (error) {
       this.logger.warn({ err: error }, "Failed to execute lock command through SmartThings");
       if (error instanceof HapStatusError) {
@@ -254,25 +228,20 @@ export class LockAccessory implements LockStateSink {
     this.clearTransitionTimeout();
 
     this.transitionTimeoutTimer = setTimeout(() => {
-      if (this.pendingTargetState !== targetState) {
+      const transitionTimeoutResult = this.stateMachine.handleTransitionTimeout(targetState);
+      if (!transitionTimeoutResult.timedOut) {
         return;
       }
 
-      this.pendingTargetState = null;
-
-      if (this.currentState !== "unknown") {
-        this.targetState = this.currentState;
-        this.lockService.updateCharacteristic(
-          Characteristic.LockTargetState,
-          mapDesiredLockStateToTargetCharacteristicValue(this.targetState)
-        );
+      if (transitionTimeoutResult.shouldUpdateTargetStateCharacteristic) {
+        this.updateTargetStateCharacteristic();
       }
 
       this.logger.warn(
         {
           transitionTimeoutMs: this.transitionTimeoutMs,
           targetState,
-          currentState: this.currentState
+          currentState: this.stateMachine.getCurrentState()
         },
         "Lock transition timed out before observed state reached target"
       );
@@ -290,5 +259,19 @@ export class LockAccessory implements LockStateSink {
 
     clearTimeout(this.transitionTimeoutTimer);
     this.transitionTimeoutTimer = null;
+  }
+
+  private updateCurrentStateCharacteristic(): void {
+    this.lockService.updateCharacteristic(
+      Characteristic.LockCurrentState,
+      mapLockStateToCurrentCharacteristicValue(this.stateMachine.getCurrentState())
+    );
+  }
+
+  private updateTargetStateCharacteristic(): void {
+    this.lockService.updateCharacteristic(
+      Characteristic.LockTargetState,
+      mapDesiredLockStateToTargetCharacteristicValue(this.stateMachine.getTargetState())
+    );
   }
 }
