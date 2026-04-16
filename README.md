@@ -17,16 +17,32 @@ Standalone SmartThings-to-HomeKit bridge for one lock device, tested with a Schl
 ## Requirements
 
 - Node.js 20+
-- SmartThings personal access token
+- SmartThings token usable for more than 24 hours in this app's current auth model
 - SmartThings lock device ID
 - Apple Home hub/Home app environment that supports third-party HomeKit accessories on LAN
 - Linux/NAS host for Docker deployment (`network_mode: host` recommended for mDNS)
+
+## SmartThings token compatibility
+
+This project currently expects a fixed bearer token in `SMARTTHINGS_TOKEN`. It does not implement the SmartThings OAuth authorization flow or token refresh handling.
+
+That matters because SmartThings now states that:
+
+- Personal access tokens (PATs) are valid for 24 hours from creation.
+- PATs created before 30 December 2024 may still have the long expiration originally chosen when they were created.
+- For integrations that need ongoing access, SmartThings recommends using OAuth instead of repeatedly issuing PATs.
+
+Practical impact for this bridge:
+
+- A newly created SmartThings PAT will usually stop working after 24 hours, so this bridge is not currently practical with newly issued PATs.
+- A legacy PAT created before 30 December 2024 can still work here if it has not expired or been revoked.
+- If you want this bridge to work with newly created credentials, the app would need to be updated to support SmartThings OAuth and token refresh.
 
 ## Configuration
 
 Required:
 
-- `SMARTTHINGS_TOKEN` (you can get this on the Smartthings developer site)
+- `SMARTTHINGS_TOKEN` (currently intended for a legacy SmartThings PAT that does not expire within 24 hours)
 - `SMARTTHINGS_DEVICE_ID` (see below)
 - `HOMEKIT_BRIDGE_NAME` (anything, e.g. "Front Door Lock")
 - `HOMEKIT_USERNAME` (format `AA:BB:CC:DD:EE:FF`, can be anything as long as it's in that format)
@@ -50,6 +66,13 @@ Optional:
 - `DATA_DIR` (default `/data`)
 - `LOG_LEVEL` (default `info`)
 - `HEALTH_PORT` (default `8080`)
+
+Notes for `SMARTTHINGS_TOKEN`:
+
+- Generate PATs at [account.smartthings.com/tokens](https://account.smartthings.com/tokens).
+- For this bridge, the token needs device read and device command/write access. In SmartThings OAuth scope terms, that corresponds to device read plus command execution access; this is inferred from the API calls used by the app (`GET /devices/{deviceId}/status` and `POST /devices/{deviceId}/commands`).
+- If you use the `curl` command below to discover the device ID, the token also needs enough device read/list access to enumerate your devices.
+- SmartThings only shows a newly generated PAT once, so store it immediately.
 
 ## Get your lock device ID
 
@@ -162,3 +185,10 @@ npm test
 - Default polling is 2 requests/minute, and each command burst adds up to 2-3 extra status polls in the short burst window.
 - For Docker deployments on Linux/NAS, host networking improves HomeKit discovery reliability.
 - No internet exposure is required; HomeKit traffic should remain LAN-local while still allowing local reachability to `HOMEKIT_PORT` and mDNS (UDP `5353`).
+- If you see repeated `401 Unauthorized` errors after the bridge previously worked, first verify whether the configured SmartThings token has expired or been revoked.
+
+## SmartThings references
+
+- [SmartThings Authorization and Permissions](https://developer.smartthings.com/docs/getting-started/authorization-and-permissions)
+- [SmartThings Release Notes (16 Jan 2025 PAT expiration change)](https://developer.smartthings.com/docs/release-notes)
+- [SmartThings Quick Start Guide to Testing the API](https://developer.smartthings.com/docs/getting-started/quickstart)
